@@ -2,6 +2,12 @@
 
 Python package to read a BMP file's header and pixel array in binary.
 
+## Install Instructions
+
+```shell
+pip install pybmp-dannybritto96
+```
+
 ## Usage
 
 ```python
