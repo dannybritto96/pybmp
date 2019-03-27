@@ -1,9 +1,10 @@
+name = 'pybmp'
+
 import sys
 import math
 import logging
 import binascii
 
-name = 'pybmp'
 
 class HeaderNotSupported(Exception):
     pass
@@ -11,7 +12,7 @@ class HeaderNotSupported(Exception):
 
 class BMP:
 
-    logger = logging.getLogger('bmp')
+    logger = logging.getLogger('pybmp')
     logger.setLevel(logging.DEBUG)
 
     COMPRESSION_DICT = {
