@@ -4,7 +4,7 @@ Python package to read a BMP file's header and pixel array in binary.
 
 ## Usage
 
-```
+```python
 from pybmp import BMP
 
 img = BMP(filename="sample.bmp")
