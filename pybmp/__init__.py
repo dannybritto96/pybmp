@@ -44,11 +44,19 @@ class BMP:
             if value == compression:
                 self.logger.info("Compression Method: %s" % key)
     
-    def __init__(self, filename):
+    def __init__(self, filename=None, hexdata=None):
 
-        with open(filename,"rb") as f:
-            content = f.read()
-            content = binascii.hexlify(content)
+        content = None
+        if True:
+            if filename:
+                with open(filename,"rb") as f:
+                    content = f.read()
+                    content = binascii.hexlify(content)
+            elif hexdata:
+                content = hexdata
+            else:
+                raise ValueError
+
             self.ID = self.unhexlify(content[:4]).decode('utf-8')
             self.SIZE = self.bytes2int(content[4:12])
             self.RESERVED = self.bytes2int(content[12:20])

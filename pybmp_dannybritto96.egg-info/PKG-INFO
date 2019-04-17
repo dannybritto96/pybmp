@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: pybmp-dannybritto96
-Version: 0.1.1
+Version: 0.2
 Summary: Python package to read a BMP file's header and pixel array in binary.
 Home-page: https://github.com/dannybritto96/pybmp
 Author: Danie Britto
