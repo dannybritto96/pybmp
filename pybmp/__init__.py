@@ -1,4 +1,4 @@
-name = 'pybmp'
+name = 'pybmp2'
 
 import sys
 import math
@@ -12,7 +12,7 @@ class HeaderNotSupported(Exception):
 
 class BMP:
 
-    logger = logging.getLogger('pybmp')
+    logger = logging.getLogger('pybmp2')
     logger.setLevel(logging.DEBUG)
 
     COMPRESSION_DICT = {

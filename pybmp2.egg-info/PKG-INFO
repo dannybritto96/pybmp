@@ -1,0 +1,52 @@
+Metadata-Version: 2.1
+Name: pybmp2
+Version: 1.0
+Summary: Python package to read a BMP file's header and pixel array in binary.
+Home-page: https://github.com/dannybritto96/pybmp
+Author: Danie Britto
+Author-email: dannybritto96@gmail.com
+License: UNKNOWN
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Description-Content-Type: text/markdown
+License-File: LICENSE
+
+# Py BMP
+
+Python package to read a BMP file's header and pixel array in binary.
+
+## Install Instructions
+
+```shell
+pip install pybmp2
+```
+
+## Usage
+
+```python
+from pybmp2 import BMP
+
+img = BMP(filename="sample.bmp")
+
+print(img.SHAPE)
+print(img.PIXELARRAY)
+print(img.RAWIMGSIZE)
+```
+
+```python
+from pybmp import BMP
+import binascii
+f = open('samp.bmp','rb')
+content = f.read()
+content = binascii.hexlify(content)
+img = BMP(hexdata=hexdata)
+
+print(img.SHAPE)
+print(img.PIXELARRAY)
+print(img.RAWIMGSIZE)
+```
+
+Refer: <https://en.wikipedia.org/wiki/BMP_file_format>
+
