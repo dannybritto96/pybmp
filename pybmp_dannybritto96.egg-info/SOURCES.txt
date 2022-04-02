@@ -1,7 +1,0 @@
-README.md
-setup.py
-pybmp/__init__.py
-pybmp_dannybritto96.egg-info/PKG-INFO
-pybmp_dannybritto96.egg-info/SOURCES.txt
-pybmp_dannybritto96.egg-info/dependency_links.txt
-pybmp_dannybritto96.egg-info/top_level.txt
