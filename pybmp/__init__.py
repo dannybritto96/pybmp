@@ -75,7 +75,7 @@ class BMP:
                 self.VERTICALRES = self.bytes2int(content[82:90])
                 self.NCOLORS = self.bytes2int(content[90:98])
                 self.NIMPCOLORS = self.bytes2int(content[98:106])
-                self.PIXELARRAY = self.unhexlify(content[106:106+self.RAWIMGSIZE])
+                self.PIXELARRAY = self.unhexlify(content[106:106+self.RAWIMGSIZE*2])
                 self.SHAPE = (self.WIDTH,self.HEIGHT)
                 self.PIXELARRAYSIZE = self.PixelArraySize(self.NBITSPERPIXEL,self.WIDTH,self.HEIGHT)
                 self.compression_method(self.COMPRESSION)
