@@ -1,2 +1,12 @@
+__pycache__/
+*.py[cod]
 build/
-pybmp.egg-info/
+dist/
+*.egg-info/
+.venv/
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

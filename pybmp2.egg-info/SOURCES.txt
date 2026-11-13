@@ -1,9 +1,0 @@
-LICENSE
-README.md
-pyproject.toml
-setup.py
-pybmp/__init__.py
-pybmp2.egg-info/PKG-INFO
-pybmp2.egg-info/SOURCES.txt
-pybmp2.egg-info/dependency_links.txt
-pybmp2.egg-info/top_level.txt

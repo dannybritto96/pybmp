@@ -1,2 +1,85 @@
 [build-system]
-requires = ["setuptools>=42"]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pybmp2"
+version = "2.0.0"
+description = "Fast, dependency-free reader and writer for Windows BMP images."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Danie Britto", email = "dannybritto96@gmail.com" }]
+keywords = ["bmp", "bitmap", "image", "dib", "decoder", "encoder"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+numpy = ["numpy>=1.23"]
+test = ["pytest>=7", "pytest-cov>=4", "pillow>=9", "numpy>=1.23"]
+dev = ["pybmp2[test]", "ruff>=0.6", "mypy>=1.10", "build>=1", "twine>=5"]
+
+[project.scripts]
+pybmp = "pybmp.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dannybritto96/pybmp"
+Issues = "https://github.com/dannybritto96/pybmp/issues"
+Changelog = "https://github.com/dannybritto96/pybmp/blob/master/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pybmp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/pybmp", "tests", "benchmarks", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["pybmp"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 90
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+src = ["src", "tests"]
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "PT", "RUF", "PL", "PERF", "TC"]
+ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004", "PLC0415", "PERF203", "PLR0917"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR2004", "N802", "N806", "TC"]
+"benchmarks/*" = ["T201", "N802", "TC", "B023", "PT018"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src/pybmp", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["PIL.*"]
+ignore_missing_imports = true
