@@ -8,6 +8,9 @@ Quick start::
     print(img.size, img.bits_per_pixel, img.mode)
     rgb = img.to_rgb()           # packed RGB bytes, rows top-down
 
+    with pybmp.open_lazy("huge.bmp") as big:   # headers only; rows on demand
+        first_rows = big.read_rows(0, 16)
+
     data = pybmp.encode(2, 1, b"\\xff\\x00\\x00\\x00\\xff\\x00")
     pybmp.BMP(data=data).save("out.bmp")
 """
@@ -20,7 +23,7 @@ from typing import IO, TYPE_CHECKING
 
 from ._bmp import BMP
 from ._constants import Compression
-from ._encode import DEFAULT_PPM, HeaderVersion, Mode, encode
+from ._encode import DEFAULT_PPM, HeaderVersion, Mode, encode, encode_embedded
 from ._errors import (
     BMPError,
     HeaderNotSupported,
@@ -29,6 +32,7 @@ from ._errors import (
     UnsupportedFormatError,
 )
 from ._header import BMPHeader, parse_header
+from ._lazy import LazyBMP, open_lazy
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -41,18 +45,21 @@ __all__ = [
     "HeaderNotSupported",
     "HeaderVersion",
     "InvalidBMPError",
+    "LazyBMP",
     "Mode",
     "TruncatedFileError",
     "UnsupportedFormatError",
     "__version__",
     "encode",
+    "encode_embedded",
     "name",
     "open",
+    "open_lazy",
     "parse_header",
     "write",
 ]
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 #: Distribution name on PyPI (kept from pybmp 1.x).
 name = "pybmp2"
@@ -75,6 +82,7 @@ def write(
     top_down: bool = False,
     header: HeaderVersion | None = None,
     pixels_per_meter: int = DEFAULT_PPM,
+    rle: bool = False,
 ) -> None:
     """Encode pixels with :func:`encode` and write them to a path or file object."""
     data = encode(
@@ -87,6 +95,7 @@ def write(
         top_down=top_down,
         header=header,
         pixels_per_meter=pixels_per_meter,
+        rle=rle,
     )
     if isinstance(path, (str, os.PathLike)):
         with builtins.open(path, "wb") as f:

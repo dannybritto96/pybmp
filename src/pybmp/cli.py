@@ -36,6 +36,11 @@ def _build_parser() -> argparse.ArgumentParser:
     order.add_argument("--top-down", dest="top_down", action="store_true", default=None)
     order.add_argument("--bottom-up", dest="top_down", action="store_false")
     conv.add_argument("--header", choices=("core", "info", "v4", "v5"))
+    conv.add_argument(
+        "--rle",
+        action="store_true",
+        help="RLE-compress the output (4- or 8-bit indexed images only)",
+    )
     return parser
 
 
@@ -69,7 +74,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _info(args.files, args.json)
     try:
         BMP(args.source).convert(
-            bits=args.bits, top_down=args.top_down, header=args.header
+            bits=args.bits, top_down=args.top_down, header=args.header, rle=args.rle
         ).save(args.dest)
     except (OSError, BMPError) as exc:
         print(f"pybmp: {exc}", file=sys.stderr)

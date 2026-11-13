@@ -26,6 +26,7 @@ _V4_TAIL = struct.Struct("<I36sIII")
 _V5_TAIL = struct.Struct("<IIII")
 
 _VALID_BPP = frozenset({1, 2, 4, 8, 16, 24, 32})
+_EMBEDDED: dict[int, str] = {Compression.BI_JPEG: "jpeg", Compression.BI_PNG: "png"}
 
 
 def row_stride(bits_per_pixel: int, width: int) -> int:
@@ -99,6 +100,13 @@ class BMPHeader:
         """``True`` for OS/2 headers, whose compression codes 3 and 4 differ."""
         return self.header_size in (16, 64)
 
+    @property
+    def embedded_format(self) -> str | None:
+        """``"jpeg"`` or ``"png"`` for ``BI_JPEG`` / ``BI_PNG`` files, else ``None``."""
+        if self.is_os2 or self.header_size < 40:
+            return None
+        return _EMBEDDED.get(self.compression)
+
 
 def _need(data: memoryview, end: int, what: str) -> None:
     if len(data) < end:
@@ -167,7 +175,9 @@ def parse_header(data: bytes | bytearray | memoryview) -> BMPHeader:
             mv, FILE_HEADER_SIZE + 108
         )
 
-    if bpp not in _VALID_BPP:
+    # BI_JPEG / BI_PNG files carry a whole embedded image; biBitCount may be 0.
+    embedded = not is_os2 and header_size >= 40 and comp in _EMBEDDED
+    if bpp not in _VALID_BPP and not (embedded and bpp == 0):
         raise InvalidBMPError(f"invalid bits per pixel: {bpp}")
     if width <= 0:
         raise InvalidBMPError(f"invalid width: {width}")
@@ -180,11 +190,11 @@ def parse_header(data: bytes | bytearray | memoryview) -> BMPHeader:
 
     # Palette: 3-byte RGBTRIPLEs for the core header, 4-byte RGBQUADs otherwise.
     palette: tuple[tuple[int, int, int], ...] = ()
-    count = used or (1 << bpp if bpp <= 8 else 0)
+    count = used or (1 << bpp if 0 < bpp <= 8 and not embedded else 0)
     if count:
         entry = 3 if header_size == CORE_HEADER_SIZE else 4
         available = (min(offset, len(mv)) - after_header) // entry
-        if bpp <= 8 and available <= 0:
+        if bpp <= 8 and not embedded and available <= 0:
             raise TruncatedFileError("palette is missing")
         count = max(0, min(count, available, 1 << 16))
         raw = bytes(mv[after_header : after_header + count * entry])
