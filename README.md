@@ -30,6 +30,11 @@ The distribution is called **`pybmp2`** on PyPI. The import name is `pybmp`.
   width, palettes of any size, and the pixel-data offset from the file header.
 - Encodes 1/2/4/8-bit indexed, 16-bit (X1R5G5B5), 24-bit and 32-bit RGB, and
   32-bit RGBA, with a core, info, V4 or V5 header, top-down or bottom-up.
+- Writes `BI_RLE8` and `BI_RLE4` run-length compressed files (`rle=True`).
+- Opens huge files lazily (`open_lazy`): only the headers are read up front,
+  and rows are decoded on demand from a memory map, a file object or bytes.
+- Exposes the PNG or JPEG stream embedded in `BI_PNG` / `BI_JPEG` files,
+  decodes it with Pillow if installed, and can write such files.
 - Gives typed header access (`BMPHeader` dataclass), specific exceptions, a
   `pybmp` command-line tool, and full type hints (`py.typed`).
 - Stays backwards compatible with the pybmp 1.x attributes (`SHAPE`,
@@ -39,20 +44,21 @@ The distribution is called **`pybmp2`** on PyPI. The import name is `pybmp`.
 
 These raise `UnsupportedFormatError` when you decode pixels. Headers still parse.
 
-- `BI_JPEG` and `BI_PNG` embedded images. `pixel_array` returns the embedded
-  stream, so you can hand it to a JPEG or PNG decoder.
+- Decoding `BI_JPEG` and `BI_PNG` pixels with `to_rgb()` and friends. Use
+  `embedded_image` (the raw stream) or `open_embedded()` (needs Pillow) instead.
 - `BI_CMYK`, `BI_CMYKRLE8` and `BI_CMYKRLE4` (Windows Metafile only).
 - OS/2 Huffman 1D and RLE24 compression.
 - ICC colour profiles and gamma in V4/V5 headers are parsed but not applied.
 - Multi-image OS/2 bitmap arrays (`BA`) are read as a single image.
-- Writing RLE-compressed files, and converting true-colour images to an
-  indexed palette (quantisation).
+- Converting true-colour images to an indexed palette (quantisation), and
+  writing RLE delta escapes (the encoder never needs them).
 
 ## Install
 
 ```shell
 pip install pybmp2            # pure Python, no dependencies
 pip install "pybmp2[numpy]"   # adds the optional numpy fast path and to_numpy()
+pip install "pybmp2[pillow]"  # adds Pillow for open_embedded() (PNG/JPEG in BMP)
 ```
 
 From source:
@@ -150,6 +156,88 @@ img = pybmp.BMP.from_pixels(3, 2, rgb)                 # build a BMP object dire
 img.convert(bits=32, top_down=True).save("converted.bmp")
 ```
 
+### Lazy and memory-mapped reading
+
+`open_lazy()` (or `LazyBMP(...)`) reads only the headers and palette. Rows are
+read and decoded when you ask for them, so a multi-gigabyte bitmap can be
+inspected or streamed in constant memory. Paths are memory-mapped (pass
+`use_mmap=False` to use plain reads); binary file objects and
+`bytes`/`bytearray`/`memoryview` work too, without a copy.
+
+```python
+import pybmp
+
+with pybmp.open_lazy("example.bmp") as img:   # headers only; file stays mapped
+    print(img.size, img.mode, img.random_access)   # (3, 2) RGB True
+    top = img.read_rows(0, 1)                 # rows 0..0, RGB bytes, top-down
+    last = img.row(-1)                        # negative rows count from the bottom
+    print(img.get_pixel(0, 1))                # (255, 255, 0), reads one row only
+    for row in img.iter_rows(mode="RGBA"):    # one row at a time, ~1 MiB per read
+        assert len(row) == img.width * 4
+    eager = img.load()                        # the whole file as a normal BMP
+```
+
+`read_rows(start, stop)` takes slice-style bounds and `mode="RGB"`, `"RGBA"`
+or `"P"` (palette indices). `to_numpy(start, stop)` returns just those rows.
+Uncompressed and bit-field files are read row by row. RLE rows can't be found
+without decoding everything before them, so for `BI_RLE8` / `BI_RLE4` files
+(`random_access` is `False`) the first row access decodes the whole image once
+and caches the indices. Closing the `LazyBMP` releases the map and closes a
+file it opened; file objects you pass in stay open.
+
+### RLE compression
+
+`rle=True` on `encode()`, `write()`, `BMP.from_pixels()` and `BMP.convert()`
+writes `BI_RLE8` (8-bit) or `BI_RLE4` (4-bit) data for indexed images. RLE
+files are always bottom-up and need an info, V4 or V5 header.
+
+```python
+import pybmp
+
+palette = [(0, 0, 0), (255, 255, 255)]
+indices = bytes([1] * 100 + [0] * 100) * 50          # 200x50, two flat halves
+rle = pybmp.encode(200, 50, indices, mode="P", palette=palette, rle=True)
+raw = pybmp.encode(200, 50, indices, mode="P", palette=palette)
+print(len(rle), len(raw))                            # 362 10062
+assert pybmp.BMP(data=rle).to_indices() == indices
+
+small = pybmp.BMP(data=raw).convert(bits=4, rle=True)
+print(small)                     # <BMP 200x50 4-bit BI_RLE4 BITMAPINFOHEADER>
+```
+
+The encoder writes encoded runs for three or more equal pixels, word-aligned
+absolute runs for everything else, an end-of-line escape after each row and
+end-of-bitmap after the last. RLE4 absolute runs always have an even length,
+because Pillow before 13.0 drops the last pixel of an odd one.
+
+### Embedded PNG and JPEG
+
+A `BI_PNG` or `BI_JPEG` file wraps a whole PNG or JPEG stream (mostly seen
+from printer drivers). pybmp parses the headers, gives you the stream as is,
+and decodes it with Pillow when Pillow is installed. Pillow is never required
+otherwise.
+
+```python
+import io
+
+import pybmp
+from PIL import Image                        # only for making a PNG to embed
+
+buf = io.BytesIO()
+Image.new("RGB", (4, 3), (255, 0, 0)).save(buf, "PNG")
+
+data = pybmp.encode_embedded(buf.getvalue())  # size read from the PNG header
+img = pybmp.BMP(data=data)
+print(img.embedded_format, img.size)          # png (4, 3)
+assert img.embedded_image == buf.getvalue()   # the raw stream, no Pillow needed
+print(img.open_embedded().getpixel((0, 0)))   # (255, 0, 0), decoded by Pillow
+```
+
+`embedded_image` is `None` for ordinary bitmaps, and `LazyBMP` has the same
+properties. `to_rgb()` on an embedded file raises `UnsupportedFormatError`
+pointing at these instead. `encode_embedded()` (or `BMP.from_embedded()`)
+detects PNG or JPEG from the magic bytes and defaults to a V5 header.
+
 ### Errors
 
 All errors derive from `pybmp.BMPError`, which subclasses `ValueError`:
@@ -193,42 +281,61 @@ example.bmp: 3x2 24-bit BI_RGB BITMAPINFOHEADER (bottom-up, RGB, palette=0, offs
 
 $ pybmp info --json example.bmp          # every header field as JSON
 $ pybmp convert in.bmp out.bmp --bits 32 --top-down --header v5
+$ pybmp convert in.bmp out.bmp --bits 8 --rle  # BI_RLE8 (indexed sources only)
 $ python -m pybmp --version
 ```
 
 `convert` accepts `--bits {1,2,4,8,16,24,32}`, `--top-down` or `--bottom-up`,
-and `--header {core,info,v4,v5}`. Indexed targets need an indexed source.
+`--header {core,info,v4,v5}` and `--rle`. Indexed targets need an indexed source.
 
 ## Benchmarks
 
 Measured with `python benchmarks/bench.py` on Python 3.13.5, Linux x86_64
-(best of 5 runs, milliseconds). "1.x parse" is the pybmp 1.x code on `master`
-(after PR #1), which hexlifies the whole file. "2.x parse" builds a `BMP` and
+(best of 5 runs, milliseconds). "1.x parse" is the last pybmp 1.x code (the
+PR #1 merge commit), which hexlifies the whole file. "2.x parse" builds a `BMP` and
 reads `PIXELARRAY`. "naive loop" is a reference per-pixel Python decoder, not
 part of either version. Your numbers will vary by machine.
 
 | Image (24-bit) | File MB | 1.x parse | 2.x parse | Speed-up | 2.x `to_rgb` | Pillow `open+tobytes` | naive loop decode |
 |---|---|---|---|---|---|---|---|
-| 64x64 | 0.01 | 0.03 | 0.017 | 2x | 0.03 | 0.03 | 0.7 |
-| 512x512 | 0.79 | 2.21 | 0.103 | 21x | 0.55 | 0.43 | 43.1 |
-| 1024x1024 | 3.15 | 7.33 | 0.500 | 15x | 2.38 | 1.64 | 179.5 |
-| 2048x2048 | 12.58 | 32.83 | 1.626 | 20x | 9.16 | 6.35 | - |
-| 4096x4096 | 50.33 | 87.87 | 42.668 | 2x | 144.09 | 91.92 | - |
+| 64x64 | 0.01 | 0.03 | 0.018 | 2x | 0.03 | 0.04 | 0.7 |
+| 512x512 | 0.79 | 1.85 | 0.107 | 17x | 0.54 | 0.43 | 42.1 |
+| 1024x1024 | 3.15 | 7.17 | 0.474 | 15x | 2.32 | 1.62 | 167.0 |
+| 2048x2048 | 12.58 | 31.61 | 1.589 | 20x | 8.97 | 6.44 | - |
+| 4096x4096 | 50.33 | 87.05 | 38.250 | 2x | 138.46 | 85.21 | - |
 
 Decode and encode at 2048x2048 (4.2 megapixels), milliseconds:
 
 | Format | 2.x decode to RGB(A) | Pillow decode | 2.x encode |
 |---|---|---|---|
-| 1-bit indexed | 15.9 | 4.9 | 36.6 |
-| 4-bit indexed | 15.9 | 5.0 | 34.1 |
-| 8-bit indexed | 12.4 | 4.3 | 24.4 |
-| 16-bit RGB555 | 21.5 | 12.3 | 30.0 |
-| 24-bit RGB | 8.1 | 6.7 | 10.2 |
-| 32-bit RGBA (V4) | 13.7 | 5.4 | 13.7 |
+| 1-bit indexed | 15.9 | 4.8 | 35.8 |
+| 4-bit indexed | 16.0 | 5.0 | 32.9 |
+| 8-bit indexed | 12.5 | 4.2 | 24.1 |
+| 16-bit RGB555 | 20.8 | 12.3 | 30.5 |
+| 24-bit RGB | 7.9 | 6.6 | 10.1 |
+| 32-bit RGBA (V4) | 13.6 | 5.4 | 13.8 |
 
 pybmp 1.x could not decode pixels at all, so there is no 1.x column for
 decoding. Pure-Python 2.x decoding is 20-80x faster than a per-pixel loop and
 within 1.2-3.5x of Pillow's C decoder.
+
+Lazy reading of a 4096x4096 24-bit file (50 MB), milliseconds. The eager
+column always reads and decodes the whole file:
+
+| Operation | eager `BMP` | `open_lazy` (mmap) |
+|---|---|---|
+| open + read headers | 3.35 | 0.029 |
+| open + decode one row | 113.19 | 0.054 |
+| open + decode every row (`iter_rows`) | 107.51 | 33.69 |
+
+RLE on a 2048x2048 image of flat colour bands with a noisy row every 16 rows:
+
+| Format | Size (KB) | 2.x encode | 2.x decode to RGB | Pillow decode |
+|---|---|---|---|---|
+| 8-bit raw | 4097 | 25.4 | 12.3 | 4.4 |
+| 8-bit RLE | 384 | 96.2 | 32.2 | 14.2 |
+| 4-bit raw | 2048 | 30.7 | 15.9 | 5.0 |
+| 4-bit RLE | 255 | 96.3 | 40.9 | 185.2 |
 
 ## Development
 
@@ -237,15 +344,16 @@ pip install -e ".[dev]"
 pytest --cov                 # tests, with coverage (CI requires >= 90%)
 ruff check . && ruff format --check .
 mypy                         # strict type checking of src/ and tests/
-python benchmarks/bench.py   # benchmarks against the 1.x code on master
+python benchmarks/bench.py   # benchmarks against the last 1.x code
 python -m build && twine check dist/*
 ```
 
 The test suite covers every module: header parsing, decoding of every bit
 depth and compression, round trips across depths, header versions,
-orientations and padded widths, malformed and truncated files, the CLI, the
-1.x compatibility layer, cross-checks against Pillow, and the code examples
-in this README.
+orientations and padded widths, lazy reading from every source type, RLE
+encoding checked by a strict spec decoder and by Pillow, embedded PNG/JPEG,
+malformed and truncated files, the CLI, the 1.x compatibility layer,
+cross-checks against Pillow, and the code examples in this README.
 
 ## Contributing
 
@@ -258,6 +366,18 @@ Bug reports and pull requests are welcome.
 4. Make sure `pytest --cov`, `ruff check .`, `ruff format --check .` and `mypy`
    all pass. CI runs them on Python 3.10 to 3.13.
 5. Open a pull request describing the change.
+
+## What's new in 2.1
+
+- `open_lazy()` / `LazyBMP`: header-only opening and on-demand rows from a
+  memory map, file object or bytes, with a context-manager API.
+- `rle=True` writes `BI_RLE8` / `BI_RLE4`, also as `pybmp convert --rle`.
+- `embedded_image`, `embedded_format` and `open_embedded()` for `BI_PNG` /
+  `BI_JPEG` files, plus `encode_embedded()` / `BMP.from_embedded()` to write
+  them. Such files with `biBitCount` 0 now parse instead of raising
+  `InvalidBMPError`.
+
+All 2.0 code keeps working unchanged. See the [CHANGELOG](CHANGELOG.md).
 
 ## What changed in 2.0
 
