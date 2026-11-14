@@ -24,10 +24,13 @@ if TYPE_CHECKING:
     from ._header import BMPHeader
 
 __all__ = [
+    "check_decodable",
     "decode_indices",
     "decode_rgb",
     "effective_masks",
     "has_alpha",
+    "indices_to_rgb",
+    "is_rle",
     "pixel_array",
     "rgb_to_rgba",
 ]
@@ -83,7 +86,24 @@ def _check_compression(header: BMPHeader) -> None:
         name = Compression(comp).name
     except ValueError:
         name = f"compression {comp}"
+    if header.embedded_format:
+        raise UnsupportedFormatError(
+            f"{name} files hold an embedded {header.embedded_format.upper()} "
+            "image; use BMP.embedded_image or BMP.open_embedded() (needs Pillow)"
+        )
     raise UnsupportedFormatError(f"{name} with {bpp} bits per pixel is not supported")
+
+
+def is_rle(header: BMPHeader) -> bool:
+    """``True`` for (supported) ``BI_RLE8`` / ``BI_RLE4`` pixel data."""
+    return header.compression in (Compression.BI_RLE8, Compression.BI_RLE4) and (
+        header.bits_per_pixel == (8 if header.compression == Compression.BI_RLE8 else 4)
+    )
+
+
+def check_decodable(header: BMPHeader) -> None:
+    """Raise :class:`UnsupportedFormatError` if pixels of ``header`` can't decode."""
+    _check_compression(header)
 
 
 def pixel_array(data: bytes, header: BMPHeader) -> bytes:
@@ -380,6 +400,16 @@ def decode_rgb(data: bytes, header: BMPHeader, *, alpha: bool = False) -> bytes:
     if alpha and not real_alpha:
         return rgb_to_rgba(result)
     return result
+
+
+def indices_to_rgb(
+    indices: bytes, palette: Sequence[tuple[int, int, int]], *, alpha: bool = False
+) -> bytes:
+    """Map palette indices to packed RGB (or opaque RGBA) bytes."""
+    if not palette:
+        raise InvalidBMPError("indexed image has no palette")
+    rgb = _apply_palette(indices, palette)
+    return rgb_to_rgba(rgb) if alpha else rgb
 
 
 def rgb_to_rgba(rgb: bytes) -> bytes:

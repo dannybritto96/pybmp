@@ -4,7 +4,41 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [2.0.0] - unreleased
+## [2.1.0] - unreleased
+
+### Added
+- Lazy and memory-mapped reading: `pybmp.open_lazy()` and `pybmp.LazyBMP`
+  read only the headers and palette when opened, then decode rows on demand
+  with `read_rows(start, stop)`, `row(y)`, `iter_rows()`, `get_pixel()` and
+  `to_numpy(start, stop)`, in `"RGB"`, `"RGBA"` or `"P"` (indices) mode. Paths
+  are memory-mapped (`use_mmap=False` for plain reads); file objects and
+  `bytes`/`bytearray`/`memoryview` work too. It is a context manager, and
+  `load()` returns an eager `BMP`. RLE files decode fully on the first row
+  access and are cached (`random_access` is `False`).
+- RLE encoding: `rle=True` on `encode()`, `write()`, `BMP.from_pixels()` and
+  `BMP.convert()` writes `BI_RLE8` (8-bit) or `BI_RLE4` (4-bit) indexed
+  images, with end-of-line and end-of-bitmap escapes and word-aligned absolute
+  runs. RLE4 absolute runs are always even-length so Pillow before 13.0
+  decodes them correctly. The CLI gains `pybmp convert --rle`.
+- Embedded PNG/JPEG (`BI_PNG` / `BI_JPEG`): `BMP.embedded_format`,
+  `BMP.embedded_image` (the raw stream), `BMP.open_embedded()` (decodes it with
+  Pillow, an optional dependency) and `BMPHeader.embedded_format`, also on
+  `LazyBMP`. `pybmp.encode_embedded()` and `BMP.from_embedded()` write such
+  files, reading the size from the PNG `IHDR` or JPEG start-of-frame.
+- Benchmarks for lazy reading and RLE.
+
+### Changed
+- `BI_PNG` / `BI_JPEG` files with `biBitCount` 0 (as the spec requires) now
+  parse. They used to raise `InvalidBMPError`.
+- `to_rgb()` and friends on an embedded PNG/JPEG file still raise
+  `UnsupportedFormatError`, now with a message pointing at `embedded_image`
+  and `open_embedded()`.
+
+### Fixed
+- `benchmarks/bench.py` loads the 1.x code from the PR #1 merge commit, since
+  `master` no longer has it.
+
+## [2.0.0] - 2026-11-13
 
 A full rewrite of the library.
 

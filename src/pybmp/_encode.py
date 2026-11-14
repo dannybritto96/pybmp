@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import struct
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
@@ -22,7 +23,7 @@ from ._util import or_bytes
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-__all__ = ["HeaderVersion", "Mode", "encode"]
+__all__ = ["HeaderVersion", "Mode", "encode", "encode_embedded", "rle_encode"]
 
 Mode = Literal["RGB", "RGBA", "P"]
 HeaderVersion = Literal["core", "info", "v4", "v5"]
@@ -103,6 +104,81 @@ def _pack_pixels(pixels: bytes, mode: str, bits: int, width: int, height: int) -
     return bytes(out)
 
 
+#: Runs of three or more equal pixels; everything between them is a literal.
+_LONG_RUN = re.compile(rb"(.)\1{2,}", re.S)
+_MAX_RUN = 255
+
+
+def _rle_literal(lit: bytes, four: bool, out: list[bytes]) -> None:
+    """Append a literal stretch of pixels as absolute runs (or short runs)."""
+    if four:
+        _rle4_literal(lit, out)
+        return
+    for s in range(0, len(lit), _MAX_RUN):
+        chunk = lit[s : s + _MAX_RUN]
+        if len(chunk) >= 3:
+            out.append(bytes((0, len(chunk))) + chunk + bytes(len(chunk) & 1))
+        else:
+            out.extend(bytes((1, v)) for v in chunk)
+
+
+def _rle4_literal(lit: bytes, out: list[bytes]) -> None:
+    """RLE4 literals use only even-length absolute runs.
+
+    An odd count is valid, but Pillow before 13.0 (and some other decoders)
+    drop the last pixel of one, so a trailing odd pixel becomes a 1-pixel run.
+    """
+    for s in range(0, len(lit), _MAX_RUN - 1):
+        chunk = lit[s : s + _MAX_RUN - 1]
+        tail = b""
+        if len(chunk) & 1:
+            chunk, tail = chunk[:-1], chunk[-1:]
+        if len(chunk) >= 4:
+            data = _pack_pixels(chunk, "P", 4, len(chunk), 1)
+            out.append(bytes((0, len(chunk))) + data + bytes(len(data) & 1))
+        elif chunk:  # two pixels: one encoded run alternating both nibbles
+            out.append(bytes((2, (chunk[0] << 4) | chunk[1])))
+        if tail:
+            out.append(bytes((1, tail[0] << 4)))
+
+
+def _rle_run(value: int, n: int, four: bool, out: list[bytes]) -> None:
+    byte = (value << 4) | value if four else value
+    full, rest = divmod(n, _MAX_RUN)
+    if full:
+        out.append(bytes((_MAX_RUN, byte)) * full)
+    if rest:
+        out.append(bytes((rest, byte)))
+
+
+def rle_encode(indices: bytes, width: int, height: int, bits: int) -> bytes:
+    """Encode top-down palette indices as a bottom-up ``BI_RLE8``/``BI_RLE4`` stream.
+
+    Every row ends with an end-of-line escape except the last, which ends with
+    end-of-bitmap. Runs of three or more equal pixels become encoded runs;
+    everything else becomes word-aligned absolute runs. Delta escapes are not
+    emitted.
+    """
+    if bits not in (4, 8):
+        raise UnsupportedFormatError("RLE compression needs 4 or 8 bits per pixel")
+    four = bits == 4
+    out: list[bytes] = []
+    mv = memoryview(indices)
+    for y in range(height - 1, -1, -1):
+        row = mv[y * width : (y + 1) * width].tobytes()
+        pos = 0
+        for m in _LONG_RUN.finditer(row):
+            start, end = m.span()
+            if start > pos:
+                _rle_literal(row[pos:start], four, out)
+            _rle_run(row[start], end - start, four, out)
+            pos = end
+        if pos < width:
+            _rle_literal(row[pos:], four, out)
+        out.append(b"\x00\x00" if y else b"\x00\x01")
+    return b"".join(out)
+
+
 def encode(
     width: int,
     height: int,
@@ -114,6 +190,7 @@ def encode(
     top_down: bool = False,
     header: HeaderVersion | None = None,
     pixels_per_meter: int = DEFAULT_PPM,
+    rle: bool = False,
 ) -> bytes:
     """Encode raw pixels into a complete BMP file.
 
@@ -132,6 +209,9 @@ def encode(
         header: DIB header version. Defaults to ``"v4"`` for RGBA (needed for
             the alpha mask) and ``"info"`` otherwise.
         pixels_per_meter: Horizontal and vertical resolution to record.
+        rle: Run-length compress the pixels: ``BI_RLE8`` for 8-bit and
+            ``BI_RLE4`` for 4-bit indexed images. Needs mode ``"P"``, a
+            non-core header and bottom-up rows.
 
     Returns:
         The encoded BMP file.
@@ -173,6 +253,16 @@ def encode(
         if width > 0xFFFF or height > 0xFFFF:
             raise UnsupportedFormatError("BITMAPCOREHEADER is limited to 65535x65535")
 
+    if rle:
+        if mode != "P" or bits not in (4, 8):
+            raise UnsupportedFormatError(
+                "RLE compression needs mode 'P' with 4 or 8 bits per pixel"
+            )
+        if header == "core":
+            raise UnsupportedFormatError("BITMAPCOREHEADER cannot store RLE data")
+        if top_down:
+            raise UnsupportedFormatError("RLE-compressed BMPs must be bottom-up")
+
     pal: list[tuple[int, int, int]] = []
     if mode == "P":
         if not palette:
@@ -188,6 +278,20 @@ def encode(
             raise BMPError(f"pixel index {max(pixels)} is outside the palette")
 
     compression = Compression.BI_BITFIELDS if mode == "RGBA" else Compression.BI_RGB
+    if rle:
+        compression = Compression.BI_RLE8 if bits == 8 else Compression.BI_RLE4
+        return _assemble(
+            header,
+            width,
+            height,
+            bits,
+            compression,
+            rle_encode(pixels, width, height, bits),
+            pal,
+            mode,
+            top_down=False,
+            pixels_per_meter=pixels_per_meter,
+        )
     packed = _pack_pixels(pixels, mode, bits, width, height)
     row_bytes = len(packed) // height
     stride = row_stride(bits, width)
@@ -203,7 +307,34 @@ def encode(
             pixel_data = b"".join([mv[s : s + row_bytes] for s in starts])
     else:
         pixel_data = packed
+    return _assemble(
+        header,
+        width,
+        height,
+        bits,
+        compression,
+        pixel_data,
+        pal,
+        mode,
+        top_down=top_down,
+        pixels_per_meter=pixels_per_meter,
+    )
 
+
+def _assemble(
+    header: str,
+    width: int,
+    height: int,
+    bits: int,
+    compression: int,
+    pixel_data: bytes,
+    pal: Sequence[tuple[int, int, int]],
+    mode: str,
+    *,
+    top_down: bool,
+    pixels_per_meter: int,
+) -> bytes:
+    """Prepend the file header, DIB header and palette to ``pixel_data``."""
     header_size = _HEADER_SIZES[header]
     if header == "core":
         dib = struct.pack("<IHHHH", header_size, width, height, 1, bits)
@@ -235,3 +366,94 @@ def encode(
     file_size = offset + len(pixel_data)
     file_header = struct.pack("<2sIHHI", b"BM", file_size, 0, 0, offset)
     return b"".join((file_header, dib, pal_bytes, pixel_data))
+
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+#: JPEG start-of-frame markers that carry the image size (not DHT/JPG/DAC).
+_SOF_MARKERS = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
+
+
+def embedded_kind(data: bytes) -> str | None:
+    """Return ``"png"`` or ``"jpeg"`` from the stream's magic bytes, else ``None``."""
+    if data.startswith(_PNG_MAGIC):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    return None
+
+
+def _png_size(data: bytes) -> tuple[int, int]:
+    if len(data) < 24 or data[12:16] != b"IHDR":
+        raise BMPError("PNG stream has no IHDR chunk")
+    width, height = struct.unpack_from(">II", data, 16)
+    return width, height
+
+
+def _jpeg_size(data: bytes) -> tuple[int, int]:
+    i, n = 2, len(data)
+    while i + 4 <= n:
+        if data[i] != 0xFF:
+            raise BMPError(f"corrupt JPEG stream: expected a marker at byte {i}")
+        marker = data[i + 1]
+        if marker == 0xFF:  # fill byte
+            i += 1
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD9:  # standalone markers
+            i += 2
+            continue
+        (length,) = struct.unpack_from(">H", data, i + 2)
+        if marker in _SOF_MARKERS:
+            if i + 9 > n:
+                break
+            height, width = struct.unpack_from(">HH", data, i + 5)
+            return width, height
+        i += 2 + length
+    raise BMPError("JPEG stream has no start-of-frame marker")
+
+
+def encode_embedded(
+    data: bytes | bytearray | memoryview,
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    header: HeaderVersion = "v5",
+    pixels_per_meter: int = DEFAULT_PPM,
+) -> bytes:
+    """Wrap a PNG or JPEG stream in a ``BI_PNG`` / ``BI_JPEG`` BMP file.
+
+    The format is detected from the stream's magic bytes. ``width`` and
+    ``height`` default to the size recorded in the PNG ``IHDR`` chunk or the
+    JPEG start-of-frame marker. Such files are mostly used by printer drivers;
+    many viewers (Pillow included) cannot open them.
+
+    Raises:
+        BMPError: if ``data`` is not PNG or JPEG, or its size can't be read.
+        UnsupportedFormatError: for ``header="core"``.
+    """
+    stream = bytes(data)
+    kind = embedded_kind(stream)
+    if kind is None:
+        raise BMPError("embedded image must be a PNG or JPEG stream")
+    if header not in _HEADER_SIZES:
+        raise BMPError(f"unknown header version {header!r}")
+    if header == "core":
+        raise UnsupportedFormatError("BITMAPCOREHEADER cannot embed PNG or JPEG data")
+    if width is None or height is None:
+        w, h = _png_size(stream) if kind == "png" else _jpeg_size(stream)
+        width = w if width is None else width
+        height = h if height is None else height
+    if width <= 0 or height <= 0:
+        raise BMPError(f"width and height must be positive, got {width}x{height}")
+    compression = Compression.BI_PNG if kind == "png" else Compression.BI_JPEG
+    return _assemble(
+        header,
+        width,
+        height,
+        0,
+        compression,
+        stream,
+        (),
+        "RGB",
+        top_down=False,
+        pixels_per_meter=pixels_per_meter,
+    )

@@ -19,6 +19,7 @@ def test_readme_examples_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     pytest.importorskip("numpy")
+    pytest.importorskip("PIL")
     monkeypatch.chdir(tmp_path)
     for i, block in enumerate(BLOCKS):
         exec(
@@ -32,6 +33,12 @@ def test_readme_examples_run(
     assert "2 4" in out
     assert "not a BMP:" in out
     assert "(3, 2) 24 24" in out
+    assert "(3, 2) RGB True" in out
+    assert "(255, 255, 0)" in out
+    assert "362 10062" in out
+    assert "<BMP 200x50 4-bit BI_RLE4 BITMAPINFOHEADER>" in out
+    assert "png (4, 3)" in out
+    assert "(255, 0, 0)" in out
 
 
 def test_readme_cli_example(

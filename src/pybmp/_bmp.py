@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import binascii
+import io
 import logging
 import os
 import warnings
@@ -10,7 +11,7 @@ from typing import IO, TYPE_CHECKING, Any, ClassVar
 
 from ._constants import Compression
 from ._decode import decode_indices, decode_rgb, has_alpha, pixel_array
-from ._encode import DEFAULT_PPM, HeaderVersion, Mode, encode
+from ._encode import DEFAULT_PPM, HeaderVersion, Mode, encode, encode_embedded
 from ._errors import BMPError, InvalidBMPError, UnsupportedFormatError
 from ._header import BMPHeader, parse_header, row_stride
 
@@ -18,8 +19,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     import numpy as np
+    from PIL import Image as PILImage
 
-__all__ = ["BMP"]
+__all__ = ["BMP", "open_embedded"]
 
 logger = logging.getLogger("pybmp2")
 
@@ -63,6 +65,23 @@ def _has_v4(h: BMPHeader) -> bool:
 
 def _mask_bytes(value: int) -> bytes:
     return value.to_bytes(4, "little")
+
+
+def open_embedded(stream: bytes | None, header: BMPHeader) -> PILImage.Image:
+    """Decode an embedded JPEG/PNG stream with Pillow, returning a loaded image."""
+    if stream is None:
+        raise UnsupportedFormatError(
+            f"{header.compression_name} file has no embedded JPEG or PNG image"
+        )
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - Pillow is a test dep
+        raise ImportError(
+            "decoding embedded images requires Pillow: pip install pillow"
+        ) from exc
+    img = Image.open(io.BytesIO(stream))
+    img.load()
+    return img
 
 
 class BMP:
@@ -144,6 +163,7 @@ class BMP:
         top_down: bool = False,
         header: HeaderVersion | None = None,
         pixels_per_meter: int = DEFAULT_PPM,
+        rle: bool = False,
     ) -> BMP:
         """Build a BMP from raw pixels; see :func:`pybmp.encode` for arguments."""
         return cls(
@@ -155,6 +175,28 @@ class BMP:
                 bits=bits,
                 palette=palette,
                 top_down=top_down,
+                header=header,
+                pixels_per_meter=pixels_per_meter,
+                rle=rle,
+            )
+        )
+
+    @classmethod
+    def from_embedded(
+        cls,
+        data: bytes | bytearray | memoryview,
+        *,
+        width: int | None = None,
+        height: int | None = None,
+        header: HeaderVersion = "v5",
+        pixels_per_meter: int = DEFAULT_PPM,
+    ) -> BMP:
+        """Wrap a PNG or JPEG stream; see :func:`pybmp.encode_embedded`."""
+        return cls(
+            data=encode_embedded(
+                data,
+                width=width,
+                height=height,
                 header=header,
                 pixels_per_meter=pixels_per_meter,
             )
@@ -205,6 +247,31 @@ class BMP:
     def pixel_array(self) -> bytes:
         """Raw stored pixel bytes, read from the header's pixel-data offset."""
         return pixel_array(self._data, self.header)
+
+    @property
+    def embedded_format(self) -> str | None:
+        """``"jpeg"`` or ``"png"`` for ``BI_JPEG`` / ``BI_PNG`` files, else ``None``."""
+        return self.header.embedded_format
+
+    @property
+    def embedded_image(self) -> bytes | None:
+        """The embedded JPEG or PNG stream of a ``BI_JPEG`` / ``BI_PNG`` file.
+
+        ``None`` for ordinary bitmaps. Write it to a ``.jpg`` / ``.png`` file or
+        hand it to any decoder; :meth:`open_embedded` does that with Pillow.
+        """
+        if self.header.embedded_format is None:
+            return None
+        return pixel_array(self._data, self.header)
+
+    def open_embedded(self) -> PILImage.Image:
+        """Decode the embedded JPEG/PNG stream with Pillow (an optional dependency).
+
+        Raises:
+            UnsupportedFormatError: if this is not a ``BI_JPEG`` / ``BI_PNG`` file.
+            ImportError: if Pillow is not installed.
+        """
+        return open_embedded(self.embedded_image, self.header)
 
     # ------------------------------------------------------------------ decoding
     def to_rgb(self) -> bytes:
@@ -272,12 +339,17 @@ class BMP:
         bits: int | None = None,
         top_down: bool | None = None,
         header: HeaderVersion | None = None,
+        rle: bool = False,
     ) -> BMP:
         """Re-encode this image with a different storage format.
 
         Indexed targets (``bits <= 8``) keep the palette and need an indexed
         source; true-colour targets keep alpha when the source has it.
+        ``rle=True`` writes ``BI_RLE8`` / ``BI_RLE4`` (4- or 8-bit indexed
+        targets only, always bottom-up).
         """
+        if rle and top_down is None:
+            top_down = False
         top_down = self.top_down if top_down is None else top_down
         if bits is not None and bits <= 8:
             if self.bits_per_pixel > 8:
@@ -293,6 +365,7 @@ class BMP:
                 palette=self.palette,
                 top_down=top_down,
                 header=header,
+                rle=rle,
             )
         if bits is None and self.bits_per_pixel <= 8:
             return BMP.from_pixels(
@@ -304,6 +377,11 @@ class BMP:
                 palette=self.palette,
                 top_down=top_down,
                 header=header,
+                rle=rle,
+            )
+        if rle:
+            raise UnsupportedFormatError(
+                "RLE compression needs an indexed (4- or 8-bit) target"
             )
         if self.mode == "RGBA" and bits in (None, 32):
             return BMP.from_pixels(

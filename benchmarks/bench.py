@@ -1,8 +1,8 @@
-"""Benchmark pybmp 2.x against the pybmp 1.x code on ``master``.
+"""Benchmark pybmp 2.x against the last pybmp 1.x code (``master`` after PR #1).
 
 Usage::
 
-    python benchmarks/bench.py            # loads 1.x from `git show master:...`
+    python benchmarks/bench.py            # loads 1.x with `git show <OLD_REF>:...`
     python benchmarks/bench.py --old path/to/old/__init__.py
 
 Every figure is the best of ``--repeat`` runs (milliseconds).
@@ -24,13 +24,16 @@ from types import ModuleType
 
 import pybmp
 
+#: Merge commit of PR #1: the last 1.x code before the 2.0 rewrite.
+OLD_REF = "1ba6a007747ba315b1fa6d72c1446125489c2a42"
+
 SIZES = [(64, 64), (512, 512), (1024, 1024), (2048, 2048), (4096, 4096)]
 
 
 def load_old(path: str | None) -> ModuleType:
     if path is None:
         src = subprocess.run(
-            ["git", "show", "master:pybmp/__init__.py"],
+            ["git", "show", f"{OLD_REF}:pybmp/__init__.py"],
             check=True,
             capture_output=True,
             text=True,
@@ -153,6 +156,78 @@ def main() -> None:
             else float("nan")
         )
         print(f"| {name} | {t_dec:.1f} | {t_pil:.1f} | {t_enc:.1f} |")
+
+    bench_lazy(tmpdir, args.repeat)
+    bench_rle(args.repeat, Image)
+
+
+def bench_lazy(tmpdir: Path, repeat: int) -> None:
+    w = h = 4096
+    rgb = (bytes(range(256)) * (w * h * 3 // 256 + 1))[: w * h * 3]
+    path = tmpdir / "lazy.bmp"
+    path.write_bytes(pybmp.encode(w, h, rgb))
+    print(f"\nLazy reading of a {w}x{h} 24-bit file (50 MB), ms:\n")
+    print("| Operation | eager `BMP` | `open_lazy` (mmap) |")
+    print("|---|---|---|")
+
+    def lazy_row() -> bytes:
+        with pybmp.open_lazy(path) as img:
+            return img.row(h // 2)
+
+    def lazy_header() -> object:
+        with pybmp.open_lazy(path) as img:
+            return img.header
+
+    def lazy_all() -> int:
+        with pybmp.open_lazy(path) as img:
+            return sum(len(r) for r in img.iter_rows())
+
+    rows = [
+        ("open + read headers", lambda: pybmp.BMP(path).header, lazy_header),
+        ("open + decode one row", lambda: pybmp.BMP(path).to_rgb(), lazy_row),
+        ("open + decode every row", lambda: pybmp.BMP(path).to_rgb(), lazy_all),
+    ]
+    for name, eager, lazy in rows:
+        t_e, t_l = best(eager, repeat), best(lazy, repeat)
+        print(f"| {name} | {t_e:.2f} | {t_l:.3f} |")
+
+
+def bench_rle(repeat: int, Image: object) -> None:  # noqa: N803
+    w = h = 2048
+    pal = [(i, 255 - i, i // 2) for i in range(256)]
+    # Horizontal bands of flat colour with a noisy stripe: typical RLE content.
+    row_flat = b"".join(bytes([c]) * 64 for c in range(32))
+    row_noisy = (bytes(range(7, 256, 7)) * 60)[:w]
+    rows = [row_noisy if y % 16 == 0 else row_flat for y in range(h)]
+    idx = b"".join(rows)
+    print(f"\nRLE on a {w}x{h} banded 8-bit / 4-bit image:\n")
+    print("| Format | size (KB) | encode ms | decode ms | Pillow decode ms |")
+    print("|---|---|---|---|---|")
+    for bits, rle in [(8, False), (8, True), (4, False), (4, True)]:
+        px = idx if bits == 8 else bytes(v & 15 for v in idx)
+        kw: dict[str, object] = {
+            "mode": "P",
+            "bits": bits,
+            "palette": pal[: 1 << bits],
+            "rle": rle,
+        }
+        t_enc = best(lambda: pybmp.encode(w, h, px, **kw), repeat)  # type: ignore[arg-type]
+        data = pybmp.encode(w, h, px, **kw)  # type: ignore[arg-type]
+        img = pybmp.BMP(data=data)
+        t_dec = best(img.to_rgb, repeat)
+        t_pil = (
+            best(
+                lambda: Image.open(io.BytesIO(data)).convert("RGB").tobytes(),  # type: ignore[attr-defined]
+                repeat,
+            )
+            if Image
+            else float("nan")
+        )
+        name = f"{bits}-bit {'RLE' if rle else 'raw'}"
+        print(
+            f"| {name} | {len(data) / 1024:.0f} | {t_enc:.1f} | {t_dec:.1f} "
+            f"| {t_pil:.1f} |"
+        )
 
 
 if __name__ == "__main__":
